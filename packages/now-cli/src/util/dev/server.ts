@@ -1135,9 +1135,7 @@ export default class DevServer {
     req: http.IncomingMessage | null,
     previousBuildResult?: BuildResult,
     filesChanged?: string[],
-    filesRemoved?: string[],
-    client?: Client,
-    project?: Project
+    filesRemoved?: string[]
   ) {
     // If the requested asset wasn't found in the match's
     // outputs then trigger a build
@@ -1153,7 +1151,7 @@ export default class DevServer {
       if (req) msg += ` for "${req.method} ${req.url}"`;
       this.output.debug(msg);
     } else {
-      const nowConfig = await this.getNowConfig(client, project);
+      const nowConfig = await this.getNowConfig();
       if (previousBuildResult) {
         // Tear down any `output` assets from a previous build, so that they
         // are not available to be served while the rebuild is in progress.
