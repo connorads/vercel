@@ -622,8 +622,12 @@ test('Deploy `api-env` fixture and test `vercel env` command', async t => {
 
     const apiJson = await apiRes.json();
 
+    // from .env file
     t.is(apiJson['MY_ENV_VAR'], 'MY_VALUE');
     t.is(apiJson['VERCEL_URL'], '');
+
+    // from project environment variables
+    t.is(apiJson['MY_STDIN_VAR'], undefined);
 
     const homeUrl = `${localhost[0]}`;
     const homeRes = await fetch(homeUrl);
