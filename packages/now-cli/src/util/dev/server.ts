@@ -50,17 +50,7 @@ import { MissingDotenvVarsError } from '../errors-ts';
 import cliPkg from '../pkg';
 import { getVercelDirectory } from '../projects/link';
 import { staticFiles as getFiles, getAllProjectFiles } from '../get-files';
-import {
-  validateNowConfigBuilds,
-  validateNowConfigRoutes,
-  validateNowConfigCleanUrls,
-  validateNowConfigHeaders,
-  validateNowConfigRedirects,
-  validateNowConfigRewrites,
-  validateNowConfigTrailingSlash,
-  validateNowConfigFunctions,
-} from './validate';
-
+import { validateConfig } from './validate';
 import { devRouter, getRoutesTypes } from './router';
 import getMimeType from './mime-type';
 import { executeBuild, getBuildMatches, shutdownBuilder } from './builder';
@@ -93,7 +83,7 @@ import {
   HttpHeadersConfig,
   EnvConfigs,
 } from './types';
-import { ProjectEnvTarget, Project } from '../../types';
+import { ProjectEnvTarget, ProjectSettings, Project } from '../../types';
 
 import Client from '../../util/client';
 import getDecryptedEnvRecords from '../../util/get-decrypted-env-records';
@@ -121,12 +111,11 @@ export default class DevServer {
   public output: Output;
   public proxy: httpProxy;
   public envConfigs: EnvConfigs;
-  public frameworkSlug: string | null;
+  public frameworkSlug?: string;
   public files: BuilderInputs;
   public address: string;
   public devCacheDir: string;
 
-  private cachedNowConfig: NowConfig | null;
   private caseSensitive: boolean;
   private apiDir: string | null;
   private apiExtensions: Set<string>;
@@ -144,8 +133,8 @@ export default class DevServer {
   private devProcess?: ChildProcess;
   private devProcessPort?: number;
   private devServerPids: Set<number>;
+  private projectSettings?: ProjectSettings;
 
-  private getNowConfigPromise: Promise<NowConfig> | null;
   private blockingBuildsPromise: Promise<void> | null;
   private updateBuildersPromise: Promise<void> | null;
   private updateBuildersTimeout: NodeJS.Timeout | undefined;
@@ -158,8 +147,8 @@ export default class DevServer {
     this.files = {};
     this.address = '';
     this.devCommand = options.devCommand;
+    this.projectSettings = options.projectSettings;
     this.frameworkSlug = options.frameworkSlug;
-    this.cachedNowConfig = null;
     this.caseSensitive = false;
     this.apiDir = null;
     this.apiExtensions = new Set();
@@ -174,7 +163,6 @@ export default class DevServer {
     this.buildMatches = new Map();
     this.inProgressBuilds = new Map();
     this.devCacheDir = join(getVercelDirectory(cwd), 'cache');
-    this.getNowConfigPromise = null;
     this.blockingBuildsPromise = null;
     this.updateBuildersPromise = null;
 
@@ -238,17 +226,7 @@ export default class DevServer {
       }
     }
 
-    const nowConfig = await this.getNowConfig(false);
-
-    // Update the env vars configuration
-    const nowConfigBuild = nowConfig.build || {};
-    const [runEnv, buildEnv] = await Promise.all([
-      this.getLocalEnv('.env', nowConfig.env),
-      this.getLocalEnv('.env.build', nowConfigBuild.env),
-    ]);
-    const allEnv = { ...buildEnv, ...runEnv };
-
-    this.envConfigs = { buildEnv, runEnv, allEnv };
+    const nowConfig = await this.getNowConfig();
 
     // Update the build matches in case an entrypoint was created or deleted
     await this.updateBuildMatches(nowConfig);
@@ -392,9 +370,7 @@ export default class DevServer {
     const sources = matches.map(m => m.src);
 
     if (isInitial && fileList.length === 0) {
-      this.output.warn(
-        'There are no files (or only files starting with a dot) inside your deployment.'
-      );
+      this.output.warn('There are no files inside your deployment.');
     }
 
     // Delete build matches that no longer exists
@@ -450,6 +426,9 @@ export default class DevServer {
             `Cleaning up "blockingBuildsPromise" after error: ${err}`
           );
           this.blockingBuildsPromise = null;
+          if (err) {
+            this.output.prettyError(err);
+          }
         });
     }
 
@@ -515,23 +494,7 @@ export default class DevServer {
     return {};
   }
 
-  async getNowConfig(canUseCache: boolean = true): Promise<NowConfig> {
-    if (this.getNowConfigPromise) {
-      return this.getNowConfigPromise;
-    }
-    this.getNowConfigPromise = this._getNowConfig(canUseCache);
-    try {
-      return await this.getNowConfigPromise;
-    } finally {
-      this.getNowConfigPromise = null;
-    }
-  }
-
-  async _getNowConfig(canUseCache: boolean = true): Promise<NowConfig> {
-    if (canUseCache && this.cachedNowConfig) {
-      return this.cachedNowConfig;
-    }
-
+  async getNowConfig(client?: Client, project?: Project): Promise<NowConfig> {
     const pkg = await this.getPackageJson();
 
     // The default empty `vercel.json` is used to serve all files as static
@@ -546,7 +509,7 @@ export default class DevServer {
       configPath = getNowConfigPath(this.cwd);
       this.output.debug(`Reading ${configPath}`);
       config = JSON.parse(await fs.readFile(configPath, 'utf8'));
-      config[fileNameSymbol] = configPath;
+      config[fileNameSymbol] = basename(configPath);
     } catch (err) {
       if (err.code === 'ENOENT') {
         this.output.debug(err.toString());
@@ -593,7 +556,7 @@ export default class DevServer {
       } = await detectBuilders(files, pkg, {
         tag: getDistTag(cliPkg.version) === 'canary' ? 'canary' : 'latest',
         functions: config.functions,
-        ...(projectSettings ? { projectSettings } : {}),
+        projectSettings: projectSettings || this.projectSettings,
         featHandleMiss,
         cleanUrls,
         trailingSlash,
@@ -648,10 +611,31 @@ export default class DevServer {
 
     await this.validateNowConfig(config);
 
-    this.cachedNowConfig = config;
     this.caseSensitive = hasNewRoutingProperties(config);
     this.apiDir = detectApiDirectory(config.builds || []);
     this.apiExtensions = detectApiExtensions(config.builds || []);
+
+    // Update the env vars configuration
+    const configBuild = config.build || {};
+    let [runEnv, buildEnv] = await Promise.all([
+      this.getLocalEnv('.env', config.env),
+      this.getLocalEnv('.env.build', configBuild.env),
+    ]);
+    let allEnv = { ...buildEnv, ...runEnv };
+
+    // if local .env/.env.build don't exist, use cloud variables
+    if (client && project && Object.keys(allEnv).length === 0) {
+      const decryptedEnvRecrds = await getDecryptedEnvRecords(
+        this.output,
+        client,
+        project,
+        ProjectEnvTarget.Development
+      );
+      allEnv = runEnv = buildEnv = decryptedEnvRecrds;
+    }
+
+    this.envConfigs = { buildEnv, runEnv, allEnv };
+
     return config;
   }
 
@@ -697,14 +681,12 @@ export default class DevServer {
       return;
     }
 
-    await this.tryValidateOrExit(config, validateNowConfigBuilds);
-    await this.tryValidateOrExit(config, validateNowConfigRoutes);
-    await this.tryValidateOrExit(config, validateNowConfigCleanUrls);
-    await this.tryValidateOrExit(config, validateNowConfigHeaders);
-    await this.tryValidateOrExit(config, validateNowConfigRedirects);
-    await this.tryValidateOrExit(config, validateNowConfigRewrites);
-    await this.tryValidateOrExit(config, validateNowConfigTrailingSlash);
-    await this.tryValidateOrExit(config, validateNowConfigFunctions);
+    const error = validateConfig(config);
+
+    if (error) {
+      this.output.prettyError(error);
+      await this.exit(1);
+    }
   }
 
   validateEnvConfig(type: string, env: Env = {}, localEnv: Env = {}): Env {
@@ -778,28 +760,7 @@ export default class DevServer {
     this.filter = ig.createFilter();
 
     // Retrieve the path of the native module
-    const nowConfig = await this.getNowConfig(false);
-    const nowConfigBuild = nowConfig.build || {};
-
-    let [runEnv, buildEnv] = await Promise.all([
-      this.getLocalEnv('.env', nowConfig.env),
-      this.getLocalEnv('.env.build', nowConfigBuild.env),
-    ]);
-
-    let allEnv = { ...buildEnv, ...runEnv };
-
-    // if local .env/.env.build don't exist, use cloud variables
-    if (Object.keys(allEnv).length === 0) {
-      const decryptedEnvRecrds = await getDecryptedEnvRecords(
-        this.output,
-        client,
-        project,
-        ProjectEnvTarget.Development
-      );
-      allEnv = runEnv = buildEnv = decryptedEnvRecrds;
-    }
-
-    this.envConfigs = { buildEnv, runEnv, allEnv };
+    const nowConfig = await this.getNowConfig(client, project || undefined);
 
     const opts = { output: this.output, isBuilds: true };
     const files = await getFiles(this.cwd, nowConfig, opts);
@@ -1174,7 +1135,9 @@ export default class DevServer {
     req: http.IncomingMessage | null,
     previousBuildResult?: BuildResult,
     filesChanged?: string[],
-    filesRemoved?: string[]
+    filesRemoved?: string[],
+    client?: Client,
+    project?: Project
   ) {
     // If the requested asset wasn't found in the match's
     // outputs then trigger a build
@@ -1190,7 +1153,7 @@ export default class DevServer {
       if (req) msg += ` for "${req.method} ${req.url}"`;
       this.output.debug(msg);
     } else {
-      const nowConfig = await this.getNowConfig();
+      const nowConfig = await this.getNowConfig(client, project);
       if (previousBuildResult) {
         // Tear down any `output` assets from a previous build, so that they
         // are not available to be served while the rebuild is in progress.
@@ -2223,7 +2186,9 @@ function isIndex(path: string): boolean {
 }
 
 function minimatches(files: string[], pattern: string): boolean {
-  return files.some(file => file === pattern || minimatch(file, pattern));
+  return files.some(
+    file => file === pattern || minimatch(file, pattern, { dot: true })
+  );
 }
 
 function fileChanged(
