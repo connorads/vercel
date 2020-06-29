@@ -139,6 +139,7 @@ export default class DevServer {
   private updateBuildersPromise: Promise<void> | null;
   private updateBuildersTimeout: NodeJS.Timeout | undefined;
 
+  private cachedEnvVars: Env | null;
   constructor(cwd: string, options: DevServerOptions) {
     this.cwd = cwd;
     this.debug = options.debug;
@@ -176,6 +177,8 @@ export default class DevServer {
       .slice(-5);
 
     this.devServerPids = new Set();
+
+    this.cachedEnvVars = null;
   }
 
   async exit(code = 1) {
@@ -624,14 +627,21 @@ export default class DevServer {
     let allEnv = { ...buildEnv, ...runEnv };
 
     // if local .env/.env.build don't exist, use cloud variables
-    if (client && project && Object.keys(allEnv).length === 0) {
-      const decryptedEnvRecrds = await getDecryptedEnvRecords(
-        this.output,
-        client,
-        project,
-        ProjectEnvTarget.Development
-      );
-      allEnv = runEnv = buildEnv = decryptedEnvRecrds;
+    if (Object.keys(allEnv).length === 0) {
+      if (this.cachedEnvVars) {
+        allEnv = runEnv = buildEnv = this.cachedEnvVars;
+      } else if (client && project) {
+        const decryptedEnvRecords = await getDecryptedEnvRecords(
+          this.output,
+          client,
+          project,
+          ProjectEnvTarget.Development
+        );
+        allEnv = runEnv = buildEnv = decryptedEnvRecords;
+
+        // cache so we only make the request once
+        this.cachedEnvVars = decryptedEnvRecords;
+      }
     }
 
     this.envConfigs = { buildEnv, runEnv, allEnv };
