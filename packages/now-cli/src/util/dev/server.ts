@@ -516,6 +516,7 @@ export default class DevServer {
     client?: Client,
     project?: Project
   ): Promise<NowConfig> {
+    console.log('getNowConfig', !!client, !!project);
     if (this.getNowConfigPromise) {
       return this.getNowConfigPromise;
     }
