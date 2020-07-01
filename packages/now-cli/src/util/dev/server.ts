@@ -116,6 +116,7 @@ export default class DevServer {
   public address: string;
   public devCacheDir: string;
 
+  private cachedNowConfig: NowConfig | null;
   private caseSensitive: boolean;
   private apiDir: string | null;
   private apiExtensions: Set<string>;
@@ -135,6 +136,7 @@ export default class DevServer {
   private devServerPids: Set<number>;
   private projectSettings?: ProjectSettings;
 
+  private getNowConfigPromise: Promise<NowConfig> | null;
   private blockingBuildsPromise: Promise<void> | null;
   private updateBuildersPromise: Promise<void> | null;
   private updateBuildersTimeout: NodeJS.Timeout | undefined;
@@ -150,6 +152,7 @@ export default class DevServer {
     this.devCommand = options.devCommand;
     this.projectSettings = options.projectSettings;
     this.frameworkSlug = options.frameworkSlug;
+    this.cachedNowConfig = null;
     this.caseSensitive = false;
     this.apiDir = null;
     this.apiExtensions = new Set();
@@ -164,6 +167,8 @@ export default class DevServer {
     this.buildMatches = new Map();
     this.inProgressBuilds = new Map();
     this.devCacheDir = join(getVercelDirectory(cwd), 'cache');
+
+    this.getNowConfigPromise = null;
     this.blockingBuildsPromise = null;
     this.updateBuildersPromise = null;
 
@@ -229,7 +234,16 @@ export default class DevServer {
       }
     }
 
-    const nowConfig = await this.getNowConfig();
+    const nowConfig = await this.getNowConfig(false);
+
+    // Update the env vars configuration
+    const nowConfigBuild = nowConfig.build || {};
+    const [runEnv, buildEnv] = await Promise.all([
+      this.getLocalEnv('.env', nowConfig.env),
+      this.getLocalEnv('.env.build', nowConfigBuild.env),
+    ]);
+    const allEnv = { ...buildEnv, ...runEnv };
+    this.envConfigs = { buildEnv, runEnv, allEnv };
 
     // Update the build matches in case an entrypoint was created or deleted
     await this.updateBuildMatches(nowConfig);
@@ -497,7 +511,31 @@ export default class DevServer {
     return {};
   }
 
-  async getNowConfig(client?: Client, project?: Project): Promise<NowConfig> {
+  async getNowConfig(
+    canUseCache: boolean = true,
+    client?: Client,
+    project?: Project
+  ): Promise<NowConfig> {
+    if (this.getNowConfigPromise) {
+      return this.getNowConfigPromise;
+    }
+    this.getNowConfigPromise = this._getNowConfig(canUseCache, client, project);
+    try {
+      return await this.getNowConfigPromise;
+    } finally {
+      this.getNowConfigPromise = null;
+    }
+  }
+
+  async _getNowConfig(
+    canUseCache: boolean = true,
+    client?: Client,
+    project?: Project
+  ): Promise<NowConfig> {
+    if (canUseCache && this.cachedNowConfig) {
+      return this.cachedNowConfig;
+    }
+
     const pkg = await this.getPackageJson();
 
     // The default empty `vercel.json` is used to serve all files as static
@@ -614,6 +652,7 @@ export default class DevServer {
 
     await this.validateNowConfig(config);
 
+    this.cachedNowConfig = config;
     this.caseSensitive = hasNewRoutingProperties(config);
     this.apiDir = detectApiDirectory(config.builds || []);
     this.apiExtensions = detectApiExtensions(config.builds || []);
@@ -639,7 +678,7 @@ export default class DevServer {
         );
         allEnv = runEnv = buildEnv = decryptedEnvRecords;
 
-        // cache so we only make the request once
+        // cache in case client/project unavailable
         this.cachedEnvVars = decryptedEnvRecords;
       }
     }
@@ -770,7 +809,18 @@ export default class DevServer {
     this.filter = ig.createFilter();
 
     // Retrieve the path of the native module
-    const nowConfig = await this.getNowConfig(client, project || undefined);
+    const nowConfig = await this.getNowConfig(
+      false,
+      client,
+      project || undefined
+    );
+    const nowConfigBuild = nowConfig.build || {};
+    const [runEnv, buildEnv] = await Promise.all([
+      this.getLocalEnv('.env', nowConfig.env),
+      this.getLocalEnv('.env.build', nowConfigBuild.env),
+    ]);
+    const allEnv = { ...buildEnv, ...runEnv };
+    this.envConfigs = { buildEnv, runEnv, allEnv };
 
     const opts = { output: this.output, isBuilds: true };
     const files = await getFiles(this.cwd, nowConfig, opts);
