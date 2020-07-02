@@ -86,7 +86,9 @@ import {
 import { ProjectEnvTarget, ProjectSettings, Project } from '../../types';
 
 import Client from '../../util/client';
-import getDecryptedEnvRecords from '../../util/get-decrypted-env-records';
+import getDecryptedEnvRecords, {
+  EmptyStringEnv,
+} from '../../util/get-decrypted-env-records';
 
 interface FSEvent {
   type: string;
@@ -103,6 +105,10 @@ function sortBuilders(buildA: Builder, buildB: Builder) {
   }
 
   return 0;
+}
+
+interface Env {
+  [name: string]: string | undefined;
 }
 
 export default class DevServer {
@@ -676,8 +682,11 @@ export default class DevServer {
           project,
           ProjectEnvTarget.Development
         );
-        allEnv = runEnv = buildEnv = decryptedEnvRecords;
-        config.env = configBuild.env = allEnv;
+
+        if (decryptedEnvRecords) {
+          allEnv = runEnv = buildEnv = decryptedEnvRecords;
+          config.env = configBuild.env = allEnv as EmptyStringEnv;
+        }
 
         // cache in case client/project unavailable
         this.cachedEnvVars = decryptedEnvRecords;

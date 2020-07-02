@@ -3,15 +3,15 @@ import getDecryptedSecret from './env/get-decrypted-secret';
 import Client from './client';
 import { Output } from './output/create-output';
 import { ProjectEnvTarget, Project } from '../types';
-
-import { Env } from '@vercel/build-utils';
-
+export interface EmptyStringEnv {
+  [name: string]: string;
+}
 export default async function getDecryptedEnvRecords(
   output: Output,
   client: Client,
   project: null | Project,
   target: ProjectEnvTarget
-): Promise<Env> {
+): Promise<EmptyStringEnv> {
   if (!project) {
     return {};
   }
@@ -31,7 +31,7 @@ export default async function getDecryptedEnvRecords(
     })
   );
 
-  const results: Env = {};
+  const results: EmptyStringEnv = {};
   for (let i = 0; i < decryptedValues.length; i++) {
     const { key } = envs[i];
     const { value, found } = decryptedValues[i];
