@@ -16,6 +16,12 @@
       "mustContain": "Hi"
     },
     {
+      "path": "/",
+      "responseHeaders": {
+        "x-vercel-cache": "HIT"
+      }
+    },
+    {
       "path": "/non-existent",
       "mustContain": "custom 404!!"
     },
