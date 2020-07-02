@@ -516,7 +516,6 @@ export default class DevServer {
     client?: Client,
     project?: Project
   ): Promise<NowConfig> {
-    console.log('getNowConfig', !!client, !!project);
     if (this.getNowConfigPromise) {
       return this.getNowConfigPromise;
     }
@@ -678,6 +677,7 @@ export default class DevServer {
           ProjectEnvTarget.Development
         );
         allEnv = runEnv = buildEnv = decryptedEnvRecords;
+        config.env = configBuild.env = allEnv;
 
         // cache in case client/project unavailable
         this.cachedEnvVars = decryptedEnvRecords;
